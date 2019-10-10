@@ -1,0 +1,263 @@
+---
+title: "Movielens Project"
+author: "Sergio Grueso"
+date: "9/10/2019"
+output: word_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Code required to create validation and edx datasets (training and test sets):
+
+
+```{r}
+if(!require(tidyverse)) install.packages("tidyverse", repos = "http://cran.us.r-project.org")
+if(!require(caret)) install.packages("caret", repos = "http://cran.us.r-project.org")
+if(!require(data.table)) install.packages("data.table", repos = "http://cran.us.r-project.org")
+if(!require(lubridate)) install.packages("lubridate", repos = "http://cran.us.r-project.org")
+
+
+dl <- tempfile()
+download.file("http://files.grouplens.org/datasets/movielens/ml-10m.zip", dl)
+ratings <- fread(text = gsub("::", "\t", readLines(unzip(dl, "ml-10M100K/ratings.dat"))),
+                 col.names = c("userId", "movieId", "rating", "timestamp"))
+movies <- str_split_fixed(readLines(unzip(dl, "ml-10M100K/movies.dat")), "\\::", 3)
+colnames(movies) <- c("movieId", "title", "genres")
+movies <- as.data.frame(movies) %>% mutate(movieId = as.numeric(levels(movieId))[movieId],
+                            title = as.character(title),
+                            genres = as.character(genres))
+movielens <- left_join(ratings, movies, by = "movieId")
+
+set.seed(1, sample.kind="Rounding")
+
+test_index <- createDataPartition(y = movielens$rating, times = 1, p = 0.1, list = FALSE)
+edx <- movielens[-test_index,]
+temp <- movielens[test_index,]
+validation <- temp %>% 
+     semi_join(edx, by = "movieId") %>%
+     semi_join(edx, by = "userId")
+removed <- anti_join(temp, validation)
+edx <- rbind(edx, removed)
+rm(dl, ratings, movies, test_index, temp, movielens, removed)
+```
+
+# With a simple summary of the edx and validation dataset we can see their dimensions and what variables they contain:
+
+```{r}
+str(edx)
+dim(edx)
+
+str(validation)
+dim(validation)
+```
+
+# We can quickly check if there is any missing values with anyNA() function which indicates if there is any elements missings (FALSE means no elements missing).
+
+```{r}
+anyNA(edx)
+
+anyNA(validation)
+```
+
+#The analysis starts by looking how the variables interact with the variable we want to predict (rating) in order to see if there is any pattern we need to include in our model
+
+# We can quickly compute the top ten most rated films on our date set with this piece of code:
+
+```{r}
+edx %>% group_by(title) %>% summarize(n = n()) %>% arrange(desc(n)) %>% head(10)
+```
+
+# How many movies have been rated only once (total of 126 movies):
+
+```{r}
+edx %>% group_by(title) %>% mutate(n = n()) %>% filter(n == 1)
+```
+
+# And the general distribution of the number of rates:
+
+```{r}
+edx %>% group_by(title) %>% mutate(n = n()) %>%
+  ggplot(aes(n)) + 
+  geom_histogram(fill = "grey") +
+  scale_x_log10() + 
+  scale_y_log10() + 
+  xlab("Number of times movie is rated") + ylab("number of movies")
+```
+
+# For example we can look if all the users rate with the same frecuency by comparing the number of rates per user.
+
+```{r}
+edx %>% group_by(userId) %>% summarize(n = n()) %>%
+    ggplot(aes(n)) +
+    geom_histogram(fill = "grey")  +
+    scale_x_log10() + 
+    scale_y_log10() + 
+    xlab("Number of rates") + ylab("UserID")
+```
+
+
+
+# We can plot the average rating of every user 
+
+```{r}
+edx %>% group_by(userId) %>% summarize(avg= mean(rating)) %>%
+    ggplot(aes(userId, avg)) + 
+    geom_point() +
+    scale_x_log10() + 
+    scale_y_log10() + 
+    xlab("UserID") + ylab("Average ratings")
+```
+
+
+# Next variable is time, does the passage of time affect rates? We can figure that out by ploting the number of rates per year:
+
+
+```{r}
+edx %>% mutate(date = round_date(date, unit = "week")) %>%
+    group_by(date) %>%
+    summarize(rating = mean(rating)) %>%
+    ggplot(aes(date, rating)) +
+    geom_point() +
+    geom_smooth() +
+    xlab("Year") + ylab("Average Rating")
+
+```
+
+
+# And the mean rates per year:
+```{r}
+edx %>% mutate(date = round_date(date, unit = "week")) %>%
+    group_by(date) %>%
+    summarize(n = n()) %>%
+    ggplot(aes(date, n)) +
+    geom_point() +
+    geom_smooth() +
+    xlab("Year") + ylab("Number of rates")
+```
+
+
+
+# Average rates of genres with more than 100000 rates
+
+```{r}
+edx %>% group_by(genres) %>%
+    summarize(n = n(), avg = mean(rating), se = sd(rating)/sqrt(n())) %>%
+    filter(n >= 100000) %>% 
+    mutate(genres = reorder(genres, avg)) %>%
+    ggplot(aes(x = genres, y = avg, ymin = avg - 2*se, ymax = avg + 2*se)) + 
+    geom_point() +
+    geom_errorbar() + 
+    theme(axis.text.x = element_text(angle = 90, hjust = 1))
+```
+
+# Most rated genres
+
+```{r}
+edx %>% group_by(genres) %>%
+    summarize(n = n(), se = sd(rating)/sqrt(n())) %>%
+    filter(n >= 100000) %>% 
+    mutate(genres = reorder(genres, n)) %>%
+    ggplot(aes(x = genres, y = n, ymin = n - 2*se, ymax = n + 2*se)) + 
+    geom_point() +
+    geom_errorbar() + 
+    theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+    xlab("Genres") + ylab("Number of ratings")
+```
+
+
+
+# Least rated genres
+
+```{r}
+edx %>% group_by(genres) %>%
+    summarize(n = n()) %>%
+    filter(n <= 10) %>% 
+    mutate(genres = reorder(genres, n)) %>%
+    ggplot(aes(x = genres, y = n)) + 
+    geom_point() +
+    
+    theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+    xlab("Genres") + ylab("Nº of ratings")
+```
+
+## model RMSE function
+
+```{r}
+RMSE <- function(true_ratings, predicted_ratings){
+sqrt(mean((true_ratings - predicted_ratings)^2))}
+
+```
+
+## RMSE calculation
+
+```{r}
+# model_rmse <- RMSE(predicted_ratings, validation$rating)
+```
+
+
+
+## parameter 1
+
+```{r}
+mu <- mean(edx$rating) 
+movie_avgs <- edx %>% 
+    group_by(movieId) %>% 
+    summarize(b_1 = mean(rating - mu))
+```
+
+
+# parameter 2
+``` {r}
+user_avgs <- edx %>% 
+    left_join(movie_avgs, by='movieId') %>%
+    group_by(userId) %>%
+    summarize(b_2 = mean(rating - mu - b_1))
+```
+
+
+# parameter 3:
+
+
+``` {r}
+time_avgs <- edx %>% 
+    left_join(movie_avgs, by='movieId') %>%
+    left_join(user_avgs, by= 'userId') %>%
+    mutate(timestamp = timestamp/60/60/24) %>%
+    mutate(timestamp = round(timestamp, digits = 0)) %>%
+    group_by(timestamp) %>%
+    summarize(b_3 = mean(rating - mu - b_1 - b_2))
+```
+
+
+# parameter 4
+
+``` {r}
+genres_avgs <- edx %>% 
+    left_join(movie_avgs, by='movieId') %>%
+    left_join(user_avgs, by= 'userId') %>%
+    mutate(timestamp = timestamp/60/60/24) %>%
+    mutate(timestamp = round(timestamp, digits = 0)) %>%
+    left_join(time_avgs, by= 'timestamp') %>%
+    group_by(genres) %>%
+    summarize(b_4 = mean(rating - mu - b_1 - b_2 - b_3))
+```
+
+
+# final predictions
+
+``` {r}
+predicted_ratings <- validation %>%
+    mutate(timestamp = timestamp/60/60/24) %>%
+    mutate(timestamp = round(timestamp, digits = 0)) %>%
+    left_join(movie_avgs, by='movieId') %>%
+    left_join(user_avgs, by='userId') %>%
+    left_join(time_avgs, by='timestamp') %>%
+    left_join(genres_avgs, by= 'genres') %>%
+    mutate(pred = mu + b_1 + b_2 + b_3 + b_4) %>% 
+    pull(pred)
+
+model_rmse <- RMSE(predicted_ratings, validation$rating)
+model_rmse
+```
